@@ -37,6 +37,7 @@ type app struct {
 	clientSecret string
 	redirectURI  string
 	kubeconfig   string
+	usersuffix   string
 	debug        bool
 
 	verifier *oidc.IDTokenVerifier
@@ -224,6 +225,7 @@ func cmd() *cobra.Command {
 	c.Flags().StringVar(&rootCAs, "issuer-root-ca", "", "Root certificate authorities for the issuer. Defaults to host certs.")
 	c.Flags().BoolVar(&a.debug, "debug", false, "Print all request and responses from the OpenID Connect issuer.")
 	c.Flags().StringVar(&a.kubeconfig, "kubeconfig", "", "Kubeconfig file to configure")
+	c.Flags().StringVar(&a.usersuffix, "usersuffix", "", "suffix for user entry in kubeconfig (to allow same credentials on different clusters)")
 	return &c
 }
 
@@ -364,6 +366,8 @@ func (a *app) waitShutdown() {
 		log.Printf("Shutdown request (signal: %v)", sig)
 		os.Exit(0)
 	case <-a.shutdownChan:
+		// give the browser time. avoids race where it may not connect (though all else succeeds)
+		time.Sleep(1000 * time.Millisecond)
 		os.Exit(0)
 	}
 }
@@ -395,8 +399,15 @@ func updateKubeConfig(IDToken string, refreshToken string, claims claim, a *app)
 		return err
 	}
 
+	var userkey string
+	if a.usersuffix != "" {
+		userkey = fmt.Sprintf("%s-%s", claims.Email, a.usersuffix) 
+	} else {
+	        userkey = claims.Email
+	}
+
 	authInfo := k8s_api.NewAuthInfo()
-	if conf, ok := config.AuthInfos[claims.Email]; ok {
+	if conf, ok := config.AuthInfos[userkey]; ok {
 		authInfo = conf
 	}
 
@@ -411,7 +422,7 @@ func updateKubeConfig(IDToken string, refreshToken string, claims claim, a *app)
 		},
 	}
 
-	config.AuthInfos[claims.Email] = authInfo
+	config.AuthInfos[userkey] = authInfo
 
 	fmt.Printf("Writing config to %s\n", outputFilename)
 	err = k8s_client.WriteToFile(*config, outputFilename)
